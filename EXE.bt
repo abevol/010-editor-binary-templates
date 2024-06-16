@@ -5,13 +5,14 @@
 //   Authors: xSpy, Peter Kankowski, SweetScape Software, mirar
 //    E-mail: cdutboy@gmail.com (xSpy)
 //   Website: http://smallcode.weblogs.us (Peter Kankowski)
-//   Version: 0.9.4
+//   Version: 0.9.5
 //   Purpose: Parse Windows executable exe, dll, and sys files.
 //            Supports 32 and 64 bit.
 //  Category: Executable
 // File Mask: *.exe,*.dll,*.sys
 //  ID Bytes: 4D 5A //MZ
 //   History:
+//   0.9.5   2024-06-15 abevol:        Added CLR directory parsing
 //   0.9.4   2023-06-09 SweetScape:    Updated to use template styles.
 //   0.9.3   2023-03-28 SweetScape:    Fixed error being shown when Space2 was not created.
 //   0.9.2   2022-12-28 R Lagcher:     Updated mapping of Rich id and version on comp.id
@@ -194,16 +195,16 @@ typedef struct
     IMAGE_MACHINE    Machine                    <fgcolor=cPurple,format=hex,comment="WORD">;
     WORD    NumberOfSections                    <fgcolor=cBlue,comment="Section num">;
     time_t  TimeDateStamp                       <format=hex,comment="DWORD,from 01/01/1970 12:00 AM">;
-    DWORD   PointerToSymbolTable;
+    DWORD   PointerToSymbolTable                <format=hex>;
     DWORD   NumberOfSymbols;
-    WORD    SizeOfOptionalHeader;
+    WORD    SizeOfOptionalHeader                <format=hex>;
     FILE_CHARACTERISTICS   Characteristics      <comment="WORD">;
 } IMAGE_FILE_HEADER;
 
 typedef struct
 {
     DWORD   VirtualAddress  <format=hex,comment=CommentRVA2FOA>;
-    DWORD   Size;
+    DWORD   Size  <format=hex>;
 } IMAGE_DATA_DIRECTORY <read=ReadImageDataDirectory>;
 
 typedef struct
@@ -227,7 +228,7 @@ typedef struct
     if (len > 11) IMAGE_DATA_DIRECTORY  BoundImportDirectory                <comment="IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT">;
     if (len > 12) IMAGE_DATA_DIRECTORY  ImportAddressTable                  <comment="IMAGE_DIRECTORY_ENTRY_IAT",fgcolor=cPurple>;
     if (len > 13) IMAGE_DATA_DIRECTORY  DelayLoadImportDescriptors          <comment="IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT">;
-    if (len > 14) IMAGE_DATA_DIRECTORY  COMRuntimedescriptor                <comment="IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR">;
+    if (len > 14) IMAGE_DATA_DIRECTORY  CLRDirectory                        <comment="IMAGE_DIRECTORY_ENTRY_CLR">;
     if (len > 15) IMAGE_DATA_DIRECTORY  Reserved                            <comment="System Reserved">;
 } IMAGE_DATA_DIRECTORY_ARRAY;
 
@@ -282,8 +283,8 @@ typedef struct
     BYTE    MajorLinkerVersion;
     BYTE    MinorLinkerVersion;
     DWORD   SizeOfCode          <format=hex>;
-    DWORD   SizeOfInitializedData;
-    DWORD   SizeOfUninitializedData;
+    DWORD   SizeOfInitializedData <format=hex>;
+    DWORD   SizeOfUninitializedData <format=hex>;
     DWORD   AddressOfEntryPoint <format=hex,comment=CommentRVA2FOA,fgcolor=cPurple>;
     DWORD   BaseOfCode          <format=hex,comment=CommentRVA2FOA>;
     DWORD   BaseOfData          <format=hex,comment=CommentRVA2FOA>;
@@ -414,8 +415,8 @@ typedef struct
     BYTE    Name[8] <comment="can end without zero", style=sHeading4Accent>;
     union
     {
-        DWORD PhysicalAddress;
-        DWORD VirtualSize;
+        DWORD PhysicalAddress <format=hex>;
+        DWORD VirtualSize     <format=hex>;
     } Misc;
     DWORD   VirtualAddress          <format=hex>;
     DWORD   SizeOfRawData           <format=hex>;
@@ -803,6 +804,89 @@ typedef struct
     }
 } IMAGE_DEBUG_DIRECTORY <size=0x1C>;
 
+typedef struct
+{
+    DWORD IL_ONLY:1                  <comment="0x0001">;
+    DWORD REQUIRED_32_BIT:1          <comment="0x0002", name="32_BIT_REQUIRED">;
+    DWORD IL_LIBRARY:1               <comment="0x0004">;
+    DWORD STRONG_NAME_SIGNED:1       <comment="0x0008">;
+    DWORD NATIVE_ENTRYPOINT:1        <comment="0x0010">;
+    DWORD Reserved:11                <comment="0x0020  11 Bytes Reserved",hidden=true>;
+    DWORD TRACK_DEBUG_DATA:1         <comment="0x00010000">;
+    DWORD PREFERRED_32_BIT:1         <comment="0x00020000", name="32_BIT_PREFERRED">;
+    DWORD Reserved:14                <comment="0x00040000  14 Bytes Reserved",hidden=true>;
+} CLR_FLAGS <comment="DWORD">;
+
+typedef struct 
+{
+    DWORD   cb                      <format=hex>;
+    WORD    MajorRuntimeVersion     <format=decimal>;
+    WORD    MinorRuntimeVersion     <format=decimal>;
+    IMAGE_DATA_DIRECTORY Metadata;
+    CLR_FLAGS   Flags               <comment="DWORD">;
+    DWORD   EntryPointTokenOrRVA    <format=hex>;
+    IMAGE_DATA_DIRECTORY   Resources;
+    IMAGE_DATA_DIRECTORY   StrongNameSignature;
+    IMAGE_DATA_DIRECTORY   CodeManagerTable;
+    IMAGE_DATA_DIRECTORY   VTableFixups;
+    IMAGE_DATA_DIRECTORY   ExportAddressTableJumps;
+    IMAGE_DATA_DIRECTORY   ManagedNativeHeader;
+} CLR_RUNTIME_HEADER <size=0x48, style=sHeading1>;
+
+typedef struct
+{
+    DWORD Offset             <format=hex, comment=CommentMetadataOffset2FOA>;
+    DWORD Size               <format=hex>;
+    string Name;
+    local int nameLen = Strlen(Name)+1;
+    BYTE Pad[AlignUp(nameLen, 4) - nameLen]   <hidden=true>;
+} METADATA_STREAM_HEADER <read=(Name), style=sHeading3, optimize=false>;
+
+typedef struct 
+{
+    DWORD   Signature        <comment="METADATA_SIGNATURE = 0x424A5342",format=hex,style=sHeading2Accent>;
+    WORD    MajorVersion     <format=decimal>;
+    WORD    MinorVersion     <format=decimal>;
+    DWORD   Reserved         <format=hex>;
+    DWORD   VersionLength    <format=decimal>;
+    string  VersionString;
+    BYTE    Pad              <hidden=true>;
+    WORD    Flags;
+    WORD    StreamCount      <format=decimal>;
+    METADATA_STREAM_HEADER StreamHeaders[MetadataHeader.StreamCount];
+} METADATA_HEADER <style=sHeading2>;
+
+typedef struct (METADATA_STREAM_HEADER& StreamHeader)
+{
+    BYTE Data[StreamHeader.Size];
+    local string name = StreamHeader.Name;
+} METADATA_STREAM <optimize=false, read=(name)>;
+
+typedef struct
+{
+    METADATA_HEADER MetadataHeader;
+    
+    local DWORD colors[9] = {cBlack, cRed, cGreen, cBlue, cPurple, cAqua, cYellow, cGray, cSilver};
+    local int i = 0;
+    local DWORD metadataFOA = RVA2FOA(CLRHeader.Metadata.VirtualAddress);
+    for( i = 0; i < MetadataHeader.StreamCount; i++)
+    {
+        FSeek(MetadataHeader.StreamHeaders[i].Offset + metadataFOA);
+        METADATA_STREAM MetadataStream(MetadataHeader.StreamHeaders[i])  <bgcolor=(colors[i])>;
+    }
+} METADATA_DIRECTORY;
+
+typedef struct
+{
+    CLR_RUNTIME_HEADER CLRHeader;
+    
+    if ((CLRHeader.Metadata.VirtualAddress != 0) && (CLRHeader.Metadata.Size != 0))
+    {
+        FSeek( RVA2FOA(CLRHeader.Metadata.VirtualAddress) );
+        METADATA_DIRECTORY Metadata;
+    }
+} CLR_DIRECTORY;
+
 /**** PARSING UTILITY FUNCTIONS ****/
 
 // IMAGE_DIRECTORY_ENTRY_EXPORT 0
@@ -931,6 +1015,51 @@ void ParseDelayImport()
        return;
     }
     //FixMe
+}
+
+// IMAGE_DIRECTORY_ENTRY_CLR
+void ParseCLR()
+{
+    if ( (NtHeader.OptionalHeader.DataDirArray.CLRDirectory.VirtualAddress == 0) || (NtHeader.OptionalHeader.DataDirArray.CLRDirectory.Size == 0) )
+    {
+       return;
+    }
+    
+    FSeek( RVA2FOA(NtHeader.OptionalHeader.DataDirArray.CLRDirectory.VirtualAddress) );
+    CLR_DIRECTORY CLR;
+}
+
+/**
+ * Aligns a given value up to the nearest multiple of the specified alignment.
+ *
+ * This function adjusts the input value upwards to ensure that it is a multiple of the alignment
+ * parameter. This is particularly useful for memory alignment purposes where certain addresses
+ * need to be aligned to specific boundaries to improve performance or meet specific hardware
+ * requirements.
+ * 
+ * Parameters:
+ *   value - The integer value to be aligned.
+ *   alignment - The alignment boundary to align the value to. This should be a power of two.
+ *
+ * Returns:
+ *   The smallest integer that is a multiple of 'alignment' and is greater than or equal to 'value'.
+ * 
+ * Example:
+ *   If value = 5 and alignment = 4, the function returns 8, since 8 is the nearest multiple of 4 that is greater than or equal to 5.
+ */
+int AlignUp(int value, int alignment)
+{
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+string CommentMetadataOffset2FOA(DWORD dwOffset)
+{
+    local string sComment = "";
+    if (0 != dwOffset)
+    {
+        SPrintf(sComment, "FOA = 0x%X \n", dwOffset + RVA2FOA(CLR.CLRHeader.Metadata.VirtualAddress));
+    }
+    return sComment;
 }
 
 ULONG RVA2FOA(ULONG ulRVA)
@@ -2031,5 +2160,6 @@ ParseDebug();
 ParseTLS();
 ParseBoundImport();
 ParseDelayImport();
+ParseCLR();
 
 Printf("EXE.bt finished\n");
